@@ -149,11 +149,11 @@ ${testCases["c++"]}`,
 
         const result = await response.json() as PistonResponse;
         
-        if (result.run.stderr) {
+        if (result.run.stderr && !result.run.stdout) {
             throw new Error(result.run.stderr);
         }
 
-        const output = result.run.output.trim();
+        const output = result.run.stdout.trim();
         submissions.push(output);
         
         return NextResponse.json({
