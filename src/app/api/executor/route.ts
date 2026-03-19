@@ -47,6 +47,12 @@ export async function POST(request: Request) {
     // Language-specific test cases
     const testCases = {
         javascript: `
+            class ListNode {
+                constructor(val = 0, next = null) {
+                    this.val = val;
+                    this.next = next;
+                }
+            }
             function executeTest() {
                 const l1 = new ListNode(0);
                 const l2 = new ListNode(0);
