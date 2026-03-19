@@ -154,7 +154,11 @@ ${testCases["c++"]}`,
         });
 
         const result = await response.json() as PistonResponse;
-        
+
+        if (!result.run) {
+            throw new Error(`Piston API error: ${JSON.stringify(result)}`);
+        }
+
         if (result.run.stderr && !result.run.stdout) {
             throw new Error(result.run.stderr);
         }
