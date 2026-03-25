@@ -8,7 +8,8 @@ const corsHeaders = {
     'Access-Control-Max-Age': '86400', // 24 hours
 };
 
-const PISTON_URL = 'https://emkc.org/api/v2/piston';
+const JUDGE0_URL = 'https://judge0-ce.p.rapidapi.com';
+const JUDGE0_API_KEY = process.env.JUDGE0_API_KEY ?? '';
 
 // the JUICE, the main stuff ahahaha
 interface Submission {
@@ -18,20 +19,24 @@ interface Submission {
 
 const submissions: string[] = [];
 
-// Add these interfaces for type safety
-interface PistonRunResult {
-    stdout: string;
-    stderr: string;
-    output: string;
-    code: number;
-    signal: string | null;
+interface Judge0SubmitResponse {
+    token: string;
 }
 
-interface PistonResponse {
-    language: string;
-    version: string;
-    run: PistonRunResult;
+interface Judge0Result {
+    stdout: string | null;
+    stderr: string | null;
+    compile_output: string | null;
+    status: { id: number; description: string };
 }
+
+// Judge0 CE language IDs
+const languageMap: Record<Submission['language'], number> = {
+    'javascript': 63,
+    'python': 71,
+    'java': 62,
+    'c++': 54,
+};
 
 export async function OPTIONS() {
     return NextResponse.json({}, { headers: corsHeaders })
@@ -111,70 +116,75 @@ int main() {
 }`
     };
 
-    // Language-specific wrappers and includes
+    // Language-specific wrappers
     const wrappers = {
-        javascript: (code: string) => `${code}\n${testCases.javascript}`,
-        python: (code: string) => `${code}\n${testCases.python}`,
-        java: (code: string) => `
+        javascript: (c: string) => `${c}\n${testCases.javascript}`,
+        python: (c: string) => `${c}\n${testCases.python}`,
+        java: (c: string) => `
 public class Main {
-    ${code}
+    ${c}
     ${testCases.java}
 }`,
-        "c++": (code: string) => `
+        "c++": (c: string) => `
 #include <iostream>
 #include <vector>
 using namespace std;
-${code}
+${c}
 ${testCases["c++"]}`,
     };
 
-    // Map our language names to Piston's language names
-    const languageMap = {
-        'javascript': 'javascript',
-        'python': 'python3',
-        'java': 'java',
-        'c++': 'cpp'
+    const judgeHeaders = {
+        'Content-Type': 'application/json',
+        'X-RapidAPI-Key': JUDGE0_API_KEY,
+        'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com',
     };
 
     try {
         const wrappedCode = wrappers[code.language](code.submission);
-        
-        const response = await fetch(`${PISTON_URL}/execute`, {
+
+        // Step 1: Submit
+        const submitRes = await fetch(`${JUDGE0_URL}/submissions?base64_encoded=false&wait=false`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: judgeHeaders,
             body: JSON.stringify({
-                language: languageMap[code.language],
-                version: '*',
-                files: [{
-                    content: wrappedCode
-                }]
-            })
+                source_code: wrappedCode,
+                language_id: languageMap[code.language],
+            }),
         });
 
-        const result = await response.json() as PistonResponse;
+        const { token } = await submitRes.json() as Judge0SubmitResponse;
 
-        if (!result.run) {
-            throw new Error(`Piston API error: ${JSON.stringify(result)}`);
+        // Step 2: Poll until done (status id >= 3 means finished)
+        let result: Judge0Result | null = null;
+        for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const pollRes = await fetch(`${JUDGE0_URL}/submissions/${token}?base64_encoded=false`, {
+                headers: judgeHeaders,
+            });
+            result = await pollRes.json() as Judge0Result;
+            if (result.status.id >= 3) break;
         }
 
-        if (result.run.stderr && !result.run.stdout) {
-            throw new Error(result.run.stderr);
+        if (!result) throw new Error('Execution timed out');
+
+        // Compile error or runtime error
+        const errorOutput = result.compile_output ?? result.stderr;
+        if (result.status.id !== 3 && errorOutput) {
+            throw new Error(errorOutput.trim());
         }
 
-        const output = result.run.stdout.trim();
+        const output = (result.stdout ?? '').trim();
         submissions.push(output);
-        
+
         return NextResponse.json({
             success: true,
-            results: output
+            results: output,
         }, { headers: corsHeaders });
-        
+
     } catch (error) {
-        return NextResponse.json({ 
-            success: false, 
-            error: error instanceof Error ? error.message : 'Execution failed'
+        return NextResponse.json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Execution failed',
         }, { headers: corsHeaders });
     }
 }
